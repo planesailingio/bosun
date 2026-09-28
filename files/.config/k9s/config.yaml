@@ -1,0 +1,11 @@
+# k9s — managed by bosun. Skin file lives in ./skins/catppuccin-mocha.yaml
+# hats: each hat reads this through ~/.config/k9s/hats/<hat>/config.yaml, a symlink
+# back here; one hat's aliases, plugins and hotkeys go in that directory.
+k9s:
+  ui:
+    skin: catppuccin-mocha
+    headless: false
+    logoless: false
+    crumbsless: false
+    reactive: true
+  liveViewAutoRefresh: true

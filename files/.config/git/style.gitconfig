@@ -1,0 +1,47 @@
+# Git styling and quality-of-life defaults. Managed by bosun.
+#
+# Identity lives in ~/.gitconfig (scaffolded once by hats, yours after that),
+# which includes this file. git silently skips the include when this file is
+# missing, so a machine without bosun still has a working git.
+
+[alias]
+	root = rev-parse --show-toplevel
+	st = status -sb
+	lg = log --oneline --graph --decorate --all
+	last = log -1 HEAD --stat
+	unstage = restore --staged
+
+[push]
+	autoSetupRemote = true
+
+[init]
+	defaultBranch = main
+
+[pull]
+	rebase = false
+
+[core]
+	pager = delta
+	excludesfile = ~/.gitignore
+
+[interactive]
+	diffFilter = delta --color-only
+
+[delta]
+	navigate = true
+	line-numbers = true
+	side-by-side = true
+	syntax-theme = Catppuccin Mocha
+	hyperlinks = true
+
+[merge]
+	conflictstyle = zdiff3
+
+[diff]
+	colorMoved = default
+
+[filter "lfs"]
+	clean = git-lfs clean -- %f
+	smudge = git-lfs smudge -- %f
+	process = git-lfs filter-process
+	required = true

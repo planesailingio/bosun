@@ -1,0 +1,86 @@
+# bosun.yaml — the manifest that ships with these dotfiles.
+#
+# Deliberately generic. It says which files exist, how they are grouped for the
+# `bosun init` wizard, and which hooks run. It holds no identities and no
+# secrets: bosun bootstraps the machine and styles the shell, nothing more.
+# Per-client context switching (and every identity-shaped file, like
+# ~/.gitconfig and ~/.ssh/config) belongs to `hats`, a sibling tool.
+#
+# Paths under `files:` are relative to files/ and land at the same path under
+# $HOME, with a trailing .j2 stripped. A directory is managed recursively.
+
+bosun:
+  schema: 1
+
+groups:
+  shell:
+    description: "zsh: history, completions, aliases, tool init"
+    default: true
+  git:
+    description: "~/.config/git/style.gitconfig: delta, aliases and LFS (included from the hats-scaffolded ~/.gitconfig)"
+    default: true
+  theme:
+    description: "Catppuccin Mocha for starship, bat, btop, k9s and lazygit"
+    default: true
+  tools:
+    description: "mise global runtimes (python, node, go)"
+    default: true
+  editor:
+    description: "VS Code extension list (installed by a hook)"
+    default: false
+
+files:
+  - { path: .zshrc.j2, group: shell }
+  - { path: .zshenv.j2, group: shell }
+  - { path: .config/git/style.gitconfig, group: git }
+  - { path: .config/starship.toml, group: theme }
+  - { path: .config/bat, group: theme }
+  - { path: .config/btop, group: theme }
+  - { path: .config/k9s, group: theme }
+  - { path: .config/lazygit, group: theme }
+  - { path: .config/mise, group: tools }
+  - { path: .config/bosun/vscode-extensions.list, group: editor }
+
+hooks:
+  # Re-runs whenever any bundle file or the hook itself changes. Declaring the
+  # inputs replaces chezmoi's trick of embedding a sha256sum comment in the
+  # script, and covers the hook script too.
+  #
+  # The four bundle files are listed individually, not as the brew/ directory:
+  # onchange hashes each input with fs::read, which fails on a directory and
+  # hashes as "<missing>", so a directory input would never register a change.
+  # A new bundle file must be added here.
+  - name: brew-bundle
+    phase: after
+    trigger:
+      onchange:
+        - brew/core.Brewfile
+        - brew/devops.Brewfile
+        - brew/pentest.Brewfile
+        - brew/dev.Brewfile
+        - hooks/brew-bundle.sh
+    script: hooks/brew-bundle.sh
+
+  - name: zsh-setup
+    phase: after
+    trigger: { onchange: [hooks/zsh-setup.sh, files/.config/mise/config.toml] }
+    script: hooks/zsh-setup.sh
+
+  - name: macos-defaults
+    phase: after
+    trigger: once
+    os: [darwin]
+    script: hooks/macos-defaults.sh
+
+  - name: dock
+    phase: after
+    trigger: { onchange: [hooks/dock.sh] }
+    os: [darwin]
+    script: hooks/dock.sh
+
+  # Only meaningful once the editor group is enabled; the hook exits cleanly
+  # when the list is absent or the `code` command is not on PATH.
+  - name: vscode-extensions
+    phase: after
+    trigger: { onchange: [files/.config/bosun/vscode-extensions.list, hooks/vscode-extensions.sh] }
+    script: hooks/vscode-extensions.sh
