@@ -28,13 +28,15 @@ pub(crate) mod testkit {
     use crate::platform::{Arch, Os, Platform};
 
     const MANIFEST: &str = r#"
-bosun: { schema: 1 }
+bosun: { schema: 2 }
 groups:
   shell: { description: "zsh" }
   env:   { description: "zshenv" }
 files:
   - { path: .zshrc.j2, group: shell }
   - { path: .zshenv.j2, group: env, mode: "0600" }
+ensure:
+  - { path: .profile, group: shell, line: "source ~/.config/zsh/bosun.zsh" }
 hooks:
   - { name: probe, phase: after, trigger: once, script: hooks/probe.sh }
 "#;

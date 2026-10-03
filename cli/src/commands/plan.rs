@@ -258,7 +258,7 @@ fn show(app: &App, plan: &Plan) {
             stats(entry),
         );
         app.ui.say(match (&entry.action, colour) {
-            (Action::Create, true) => head.green().to_string(),
+            (Action::Create | Action::EnsureLine, true) => head.green().to_string(),
             (Action::Update, true) => head.yellow().to_string(),
             (Action::Destroy { .. }, true) => head.red().to_string(),
             (Action::Conflict { .. }, true) => head.magenta().to_string(),

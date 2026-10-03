@@ -8,13 +8,18 @@
 #
 # Paths under `files:` are relative to files/ and land at the same path under
 # $HOME, with a trailing .j2 stripped. A directory is managed recursively.
+#
+# `ensure:` is the opposite: a single line bosun guarantees inside a file it
+# does NOT own, leaving the rest of that file alone. ~/.zshrc is the case it
+# exists for, because installers append to it and a managed file would lose
+# their lines on every converge.
 
 bosun:
-  schema: 1
+  schema: 2
 
 groups:
   shell:
-    description: "zsh: history, completions, aliases, tool init"
+    description: "zsh: completions, keybindings, aliases, tool init (~/.config/zsh/bosun.zsh, sourced from your ~/.zshrc)"
     default: true
   git:
     description: "~/.config/git/style.gitconfig: delta, aliases and LFS (included from the hats-scaffolded ~/.gitconfig)"
@@ -30,7 +35,7 @@ groups:
     default: false
 
 files:
-  - { path: .zshrc.j2, group: shell }
+  - { path: .config/zsh/bosun.zsh.j2, group: shell }
   - { path: .zshenv.j2, group: shell }
   - { path: .config/git/style.gitconfig, group: git }
   - { path: .config/starship.toml, group: theme }
@@ -41,7 +46,22 @@ files:
   - { path: .config/mise, group: tools }
   - { path: .config/bosun/vscode-extensions.list, group: editor }
 
+ensure:
+  # ~/.zshrc belongs to the user and to whatever installers append to it. bosun
+  # owns one line of it. The guard means a machine where the shell group is off,
+  # or that has not applied yet, still opens a working shell.
+  - path: .zshrc
+    group: shell
+    line: "[ -r ~/.config/zsh/bosun.zsh ] && source ~/.config/zsh/bosun.zsh   # bosun"
+
 hooks:
+  # One-shot: turns a bosun-managed ~/.zshrc into a thin one, keeping whatever
+  # installers appended below the old template's last line.
+  - name: zshrc-split
+    phase: after
+    trigger: once
+    script: hooks/zshrc-split.sh
+
   # Re-runs whenever any bundle file or the hook itself changes. Declaring the
   # inputs replaces chezmoi's trick of embedding a sha256sum comment in the
   # script, and covers the hook script too.

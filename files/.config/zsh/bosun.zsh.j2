@@ -1,0 +1,305 @@
+# ~/.config/zsh/bosun.zsh — interactive shell config. Managed by bosun.
+#
+# Sourced from ~/.zshrc, which bosun does NOT own: that file is yours, and the
+# installers that append to it (oMLX, Wine, nvm, conda) keep working. bosun
+# guarantees exactly one line in it, pointing here.
+#
+# Client context (identity, cloud, kube, tokens) is NOT here: that is `hats`,
+# a separate tool. It lives in ~/.hats/config.yaml and is applied per shell by
+# `hat <name>`. Secrets live in ~/.hats/secrets.yaml, so shells stay offline
+# and instant without this file carrying any plaintext.
+
+# ── History ───────────────────────────────────────────────────────────────────
+# History is still here and still searchable, it just no longer drives
+# completion: Up/Down prefix-search and Ctrl-R (atuin) are the deliberate ways
+# back to what you typed. Tab answers from the filesystem and $PATH instead.
+HISTFILE=~/.zsh_history
+HISTSIZE=100000
+SAVEHIST=100000
+setopt HIST_IGNORE_ALL_DUPS HIST_REDUCE_BLANKS SHARE_HISTORY INC_APPEND_HISTORY
+setopt HIST_FIND_NO_DUPS   # cycling back through matches never stops on the same line twice
+setopt AUTO_CD INTERACTIVE_COMMENTS
+bindkey -e   # Emacs-style line editing, explicit (don't guess from $EDITOR)
+
+# ── Shell options ─────────────────────────────────────────────────────────────
+setopt COMPLETE_IN_WORD ALWAYS_TO_END   # complete mid-word, leave the cursor at the end
+unsetopt AUTO_LIST AUTO_MENU LIST_BEEP  # the first Tab inserts silently; listing is fzf's job
+setopt AUTO_PUSHD PUSHD_IGNORE_DUPS PUSHD_SILENT   # cd builds a stack; `d` lists it
+setopt EXTENDED_GLOB
+unsetopt FLOW_CONTROL                   # frees Ctrl-S and Ctrl-Q for anything else
+
+# ── Completions ───────────────────────────────────────────────────────────────
+# Homebrew-provided completion functions.
+fpath=({{ brew_prefix }}/share/zsh/site-functions $fpath)
+autoload -Uz compinit && compinit -C
+zstyle ':completion:*' menu no                       # fzf-tab handles the menu
+zstyle ':completion:*' matcher-list 'm:{a-z}={A-Za-z}'
+
+# ── fzf ───────────────────────────────────────────────────────────────────────
+# Exported before `fzf --zsh` and before fzf-tab, so every picker in the shell
+# — Ctrl-T, Alt-C, Ctrl-R and Tab — looks and filters the same way.
+export FZF_DEFAULT_COMMAND='fd --type f --hidden --follow --exclude .git'
+export FZF_CTRL_T_COMMAND="$FZF_DEFAULT_COMMAND"
+export FZF_ALT_C_COMMAND='fd --type d --hidden --follow --exclude .git'
+export FZF_DEFAULT_OPTS='--height=50% --layout=reverse --border=rounded --info=inline --cycle'
+export FZF_CTRL_T_OPTS="--preview '[[ -d {} ]] && eza --tree --level=2 --color=always --icons {} || bat --color=always --style=numbers --line-range=:200 {}'"
+export FZF_ALT_C_OPTS="--preview 'eza --tree --level=2 --color=always --icons {}'"
+
+# fzf's own keybindings have to be in place BEFORE fzf-tab loads, or fzf-tab's
+# Tab binding is overwritten. Guarded so re-sourcing this file cannot undo it.
+if [[ -z "${_FZF_INIT_DONE:-}" ]] && command -v fzf >/dev/null 2>&1; then
+  source <(fzf --zsh)
+  typeset -g _FZF_INIT_DONE=1
+fi
+
+# ── fzf-tab: the picker Tab opens on the second press ─────────────────────────
+zstyle ':fzf-tab:*' switch-group '<' '>'
+zstyle ':fzf-tab:*' fzf-flags --height=60% --layout=reverse --border=rounded --bind=tab:accept
+
+# Previews come from the same tools as the aliases below, so what the picker
+# shows and what `ls`/`cat` show are the same thing.
+zstyle ':fzf-tab:complete:*:*' fzf-preview \
+  '[[ -d $realpath ]] && eza -1 --color=always --icons $realpath || bat --color=always --style=numbers --line-range=:200 $realpath 2>/dev/null'
+zstyle ':fzf-tab:complete:(cd|z|pushd):*' fzf-preview 'eza --tree --level=2 --color=always --icons $realpath'
+zstyle ':fzf-tab:complete:(export|unset|printenv):*' fzf-preview 'eval echo \$$word'
+zstyle ':fzf-tab:complete:git-(add|diff|restore|checkout):*' fzf-preview 'git diff --color=always $word | delta'
+zstyle ':fzf-tab:complete:git-show:*' fzf-preview 'git show --color=always $word | delta'
+zstyle ':fzf-tab:complete:kubectl-*:*' fzf-preview 'kubectl describe ${words[2]} $word 2>/dev/null'
+zstyle ':fzf-tab:complete:brew-(install|info|uninstall):*' fzf-preview 'brew info $word'
+
+# ── Inline suggestions, from completions rather than history ──────────────────
+# The default strategy is `history`, which makes the grey text a replay of what
+# you last typed. `completion` asks the completion system instead, so the
+# suggestion is a real binary on $PATH or a real path on disk. It captures by
+# running `.complete-word` inside a zpty, not whatever ^I is bound to, so the
+# Tab widget below cannot recurse into it.
+#
+# ZSH_AUTOSUGGEST_MANUAL_REBIND is deliberately NOT set: the plugin re-binds on
+# every precmd, and that is the only reason the widgets defined further down
+# get wrapped at all.
+ZSH_AUTOSUGGEST_STRATEGY=(completion)
+ZSH_AUTOSUGGEST_USE_ASYNC=1
+
+# ── Plugins (order matters: syntax-highlighting must be last) ─────────────────
+source {{ brew_prefix }}/share/fzf-tab/fzf-tab.zsh 2>/dev/null
+source {{ brew_prefix }}/share/zsh-autosuggestions/zsh-autosuggestions.zsh 2>/dev/null
+source {{ brew_prefix }}/share/zsh-syntax-highlighting/zsh-syntax-highlighting.zsh 2>/dev/null
+
+# ── Tab: one segment, then the picker ─────────────────────────────────────────
+# Tab completes as far as the filesystem and $PATH unambiguously allow, which
+# for a path is one segment because zsh stops at the `/`. Tab again, with
+# nothing typed in between, opens the fzf picker. If the first press has
+# nothing to insert there is no point making you press twice, so it falls
+# straight through.
+#
+# The buffer snapshot is deliberate rather than testing $LASTWIDGET: this also
+# does the right thing when a character is typed between two Tabs.
+#
+# Tab no longer accepts the inline suggestion. → and End do that (they are in
+# the plugin's default ZSH_AUTOSUGGEST_ACCEPT_WIDGETS); Option+→ takes one word.
+typeset -g _tab_state=''
+_tab_menu() {
+  # Fall back to plain menu completion where fzf-tab is not installed, so Tab
+  # still works on a machine that only got the dotfiles.
+  if (( ${+widgets[fzf-tab-complete]} )); then
+    zle fzf-tab-complete
+  else
+    zle menu-complete
+  fi
+}
+_tab_segment_or_menu() {
+  local key="$BUFFER:$CURSOR"
+  if [[ $key == $_tab_state ]]; then
+    _tab_state=''
+    _tab_menu
+    return
+  fi
+  zle complete-word
+  if [[ "$BUFFER:$CURSOR" == $key ]]; then
+    _tab_state=''
+    _tab_menu
+  else
+    _tab_state="$BUFFER:$CURSOR"
+  fi
+}
+zle -N _tab_segment_or_menu
+bindkey '^I' _tab_segment_or_menu
+
+# Up/Down search history for entries starting with what has been typed so far,
+# the oh-my-zsh behaviour: with a prefix typed, the first Up lands on the most
+# recent match and pressing it again cycles back through older ones rather than
+# walking unrelated history. On an empty line they fall back to plain history,
+# as the widget names suggest.
+#
+# zsh-autosuggestions knows both widget names and clears the grey text as the
+# search moves. It re-binds on every precmd, so defining these after it is
+# sourced is fine (that would only matter under ZSH_AUTOSUGGEST_MANUAL_REBIND).
+# atuin is initialised below with --disable-up-arrow, so it leaves these alone.
+autoload -Uz up-line-or-beginning-search down-line-or-beginning-search
+zle -N up-line-or-beginning-search
+zle -N down-line-or-beginning-search
+bindkey '^[[A' up-line-or-beginning-search     # Up
+bindkey '^[OA' up-line-or-beginning-search     # Up, application cursor mode
+bindkey '^[[B' down-line-or-beginning-search   # Down
+bindkey '^[OB' down-line-or-beginning-search   # Down, application cursor mode
+
+# ── Option+arrows and Option+delete move and cut one path segment ─────────────
+# zsh's own word rules are no good here: the default WORDCHARS counts / - . _ as
+# word characters, so backward-kill-word eats an entire /usr/local/bin in one
+# press, and scoping WORDCHARS to '' instead stalls on every bare `/`, taking
+# two presses per segment. These walk to the real boundary in one go.
+#
+# Ctrl-W is untouched and still kills a whole shell word.
+# Both leave the surviving text in $REPLY, the zsh convention, rather than
+# echoing it: a widget runs on every keypress and should not fork a subshell.
+_segment_left() {
+  emulate -L zsh
+  setopt extended_glob
+  local left=$1
+  left=${left%%[[:space:]]##}            # step back over trailing space
+  left=${left%%[/._:=@,-]##}             # then the separators
+  left=${left%%[^/._:=@,[:space:]-]##}   # then the segment itself
+  REPLY=$left
+}
+
+_segment_right() {
+  emulate -L zsh
+  setopt extended_glob
+  local right=$1
+  right=${right##[[:space:]]##}
+  right=${right##[/._:=@,-]##}
+  right=${right##[^/._:=@,[:space:]-]##}
+  REPLY=$right
+}
+
+_backward_kill_segment() {
+  _segment_left "$LBUFFER"
+  # A slice, not ${LBUFFER#$REPLY}: that would treat the text as a glob pattern
+  # and cut the wrong amount from a path containing * [ or ?.
+  CUTBUFFER=${LBUFFER[$#REPLY+1,-1]}     # yankable with Ctrl-Y, like any kill
+  LBUFFER=$REPLY
+}
+
+_forward_kill_segment() {
+  _segment_right "$RBUFFER"
+  CUTBUFFER=${RBUFFER[1,$#RBUFFER-$#REPLY]}
+  RBUFFER=$REPLY
+}
+
+_backward_segment() { _segment_left  "$LBUFFER"; CURSOR=$#REPLY }
+_forward_segment()  { _segment_right "$RBUFFER"; CURSOR=$(( $#BUFFER - $#REPLY )) }
+
+zle -N _backward_kill_segment
+zle -N _forward_kill_segment
+zle -N _backward_segment
+zle -N _forward_segment
+
+# Option+→ should keep accepting one word of the inline suggestion, which it
+# only does for widgets the plugin knows about.
+ZSH_AUTOSUGGEST_PARTIAL_ACCEPT_WIDGETS+=(_forward_segment)
+
+# Terminals disagree about what Option+key emits, so bind every spelling:
+# ESC-prefixed (Option-as-Meta) and the CSI modifier-3 forms.
+bindkey '^[^?'     _backward_kill_segment   # Option+Backspace (ESC DEL)
+bindkey '^[^H'     _backward_kill_segment   # Option+Backspace (ESC BS)
+bindkey '^[[3;3~'  _forward_kill_segment    # Option+Delete
+bindkey '^[^[[3~'  _forward_kill_segment    # Option+Delete, ESC-prefixed
+bindkey '^[b'      _backward_segment        # Option+←
+bindkey '^[[1;3D'  _backward_segment
+bindkey '^[^[[D'   _backward_segment
+bindkey '^[f'      _forward_segment         # Option+→
+bindkey '^[[1;3C'  _forward_segment
+bindkey '^[^[[C'   _forward_segment
+
+autoload -Uz edit-command-line && zle -N edit-command-line
+bindkey '^X^E' edit-command-line            # open the current line in $EDITOR
+
+# ── Tool init ─────────────────────────────────────────────────────────────────
+eval "$(starship init zsh)"                          # prompt (kube/aws/terraform aware)
+eval "$(zoxide init zsh)"                             # z / zi jump
+eval "$(mise activate zsh)"                           # runtime versions + env
+eval "$(direnv hook zsh)"                             # per-directory env
+eval "$(atuin init zsh --disable-up-arrow)"          # searchable history (Ctrl-R)
+# (fzf init is above, with the other completion machinery: it must run before fzf-tab)
+
+# `atuin init` unconditionally prepends "atuin" to ZSH_AUTOSUGGEST_STRATEGY, and
+# has no flag to stop it, which would put history back in front of completions
+# and undo the whole point. The strategy is read at suggestion time, so setting
+# it again here wins. Ctrl-R is still atuin — that is the deliberate way back to
+# history, and this only governs the grey inline text.
+ZSH_AUTOSUGGEST_STRATEGY=(completion)
+
+# tenv (tofu/terraform/terragrunt) shims come from its install dir.
+export PATH="$HOME/.tenv/bin:$PATH"
+
+# ── Aliases ───────────────────────────────────────────────────────────────────
+alias ls='eza --icons --group-directories-first'
+alias ll='eza -lah --icons --git --group-directories-first'
+alias lt='eza --tree --level=2 --icons'
+alias tree='eza --tree --icons'
+alias cat='bat --paging=never'
+alias less='bat'
+alias top='btop'
+alias du='dust'
+alias df='duf'
+alias ps='procs'
+alias ping='gping'
+alias k='kubectl'
+alias tf='tofu'
+alias lg='lazygit'
+alias grep='rg'
+alias find='fd'
+alias d='dirs -v'
+
+# ── kubectl / helm completions ────────────────────────────────────────────────
+command -v kubectl >/dev/null && source <(kubectl completion zsh)
+command -v helm    >/dev/null && source <(helm completion zsh)
+
+# ── Hats (client context switching) ───────────────────────────────────────────
+# Defines `hat <name>` (fzf picker with no argument), its completion, and
+# loads the default hat for this shell. Everything it does is decided by
+# hats from ~/.hats/config.yaml: identity, AWS, per-shell kubeconfig, tokens and
+# the terminal tint. `hats hat list` shows what is available.
+command -v hats >/dev/null 2>&1 && eval "$(hats shell-init zsh)"
+
+# ── Global env not tied to a hat ──────────────────────────────────────────────
+# (Secrets belong in ~/.hats/config.yaml under a hat's env, so they are
+#  per-shell and cleared on switch, rather than global to every terminal.)
+export KICS_QUERIES_PATH={{ brew_prefix }}/opt/kics/share/kics/assets/queries
+
+# ── Branchlet (git worktree helper) ───────────────────────────────────────────
+_branchlet() {
+  local -a commands
+  commands=(
+    'create:Create a new worktree'
+    'list:List all worktrees'
+    'delete:Delete a worktree'
+    'settings:Manage configuration'
+  )
+  _arguments -C \
+    '(-h --help)'{-h,--help}'[Show help]' \
+    '(-v --version)'{-v,--version}'[Show version]' \
+    '(-m --mode)'{-m,--mode}'[Set mode]:mode:(menu create list delete settings)' \
+    '--from-wrapper[Called from shell wrapper]' \
+    '1:command:->command'
+  case "$state" in
+    command) _describe -t commands 'branchlet commands' commands ;;
+  esac
+}
+compdef _branchlet branchlet
+branchlet() {
+  if [ $# -eq 0 ]; then
+    local dir=$(FORCE_COLOR=3 command branchlet --from-wrapper)
+    if [ -n "$dir" ]; then
+      builtin cd "$dir" && echo "Branchlet: Navigated to $(pwd)"
+    fi
+  else
+    command branchlet "$@"
+  fi
+}
+
+# ── Grove ─────────────────────────────────────────────────────────────────────
+export PATH="$HOME/.grove/bin:$PATH"
+
+# ── Bug-bounty engagement scaffolding ─────────────────────────────────────────
+[ -f ~/.claude/scripts/hunt.sh ] && source ~/.claude/scripts/hunt.sh

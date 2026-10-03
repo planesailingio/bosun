@@ -16,7 +16,7 @@ use crate::error::ConfigError;
 /// Highest `bosun.schema` this binary understands. A repo declaring more is
 /// refused with an instruction to upgrade, which matters because the repo and
 /// the binary are released from one tag and can only skew during an upgrade.
-pub const SUPPORTED_SCHEMA: u32 = 1;
+pub const SUPPORTED_SCHEMA: u32 = 2;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RepoConfig {
@@ -27,6 +27,9 @@ pub struct RepoConfig {
     pub groups: IndexMap<String, GroupSpec>,
     #[serde(default)]
     pub files: Vec<FileSpec>,
+    /// Lines bosun guarantees inside files it does not otherwise own.
+    #[serde(default)]
+    pub ensure: Vec<EnsureSpec>,
     #[serde(default)]
     pub hooks: Vec<HookSpec>,
 }
@@ -91,6 +94,24 @@ impl FileSpec {
             None => self.path.clone(),
         }
     }
+}
+
+/// One line bosun guarantees is present in a file it does **not** own.
+///
+/// This is the opposite of a [`FileSpec`]: everything else in the target
+/// belongs to the user and to whatever installers have appended to it, so
+/// bosun only ever adds its line and never rewrites the rest. `~/.zshrc` is the
+/// case this exists for — oMLX, Wine, nvm and friends all append there, and a
+/// managed file would lose them on every converge.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EnsureSpec {
+    /// Path relative to `$HOME`.
+    pub path: PathBuf,
+    /// The exact line to guarantee. Matched ignoring trailing whitespace.
+    pub line: String,
+    pub group: String,
+    #[serde(default, flatten, skip_serializing_if = "Condition::is_empty")]
+    pub condition: Condition,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -165,8 +186,19 @@ impl RepoConfig {
                 ));
             }
         }
+        for e in &self.ensure {
+            if !self.groups.contains_key(&e.group) {
+                problems.push(format!(
+                    "ensure `{}` is in group `{}`, which is not declared under groups:",
+                    e.path.display(),
+                    e.group
+                ));
+            }
+        }
         for name in self.groups.keys() {
-            if !self.files.iter().any(|f| &f.group == name) {
+            let used = self.files.iter().any(|f| &f.group == name)
+                || self.ensure.iter().any(|e| &e.group == name);
+            if !used {
                 problems.push(format!("group `{name}` has no files"));
             }
         }

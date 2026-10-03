@@ -113,6 +113,21 @@ pub fn apply(
                     outcome.destroyed += 1;
                     report(&format!("destroyed {}", entry.display));
                 }
+                Action::EnsureLine => {
+                    let Some(contents) = &entry.contents else {
+                        continue;
+                    };
+                    if entry.target.exists() {
+                        back_up(&entry.target, &backup, &ctx.platform.home, &mut outcome)?;
+                    }
+                    write_file(entry, contents)?;
+                    // Deliberately not recorded in state. The hash would claim
+                    // the whole file, and bosun owns one line of it: recording
+                    // it would make the file a prune candidate the moment the
+                    // ensure entry went away.
+                    outcome.created += 1;
+                    report(&format!("ensured line in {}", entry.display));
+                }
                 Action::Create | Action::Update | Action::ModeChange { .. } => {
                     let Some(contents) = &entry.contents else {
                         continue;
@@ -138,6 +153,12 @@ pub fn apply(
                     }
                 }
             }
+        }
+        // bosun owns one line of these, never the file, so it must not keep a
+        // whole-file hash for them. Forgetting here also cleans up the record
+        // left behind when a file moves from `files:` to `ensure:`.
+        for target in &plan.ensured {
+            state.forget_file(target);
         }
         state.touch();
         state.save(&ctx.state_path)?;
@@ -221,11 +242,12 @@ mod tests {
     fn applying_a_fresh_plan_creates_every_file() {
         let t = Harness::new();
         let outcome = t.apply();
-        assert_eq!(outcome.created, 2);
+        assert_eq!(outcome.created, 3);
         assert_eq!(outcome.updated, 0);
         assert!(t.home.path().join(".zshrc").is_file());
         assert!(t.home.path().join(".zshenv").is_file());
-        assert!(outcome.line().contains("2 added"));
+        assert!(t.home.path().join(".profile").is_file());
+        assert!(outcome.line().contains("3 added"));
     }
 
     #[test]
@@ -357,7 +379,7 @@ mod tests {
             ..Default::default()
         });
         assert!(files.hooks_run.is_empty());
-        assert_eq!(files.created, 2);
+        assert_eq!(files.created, 3);
 
         let t2 = Harness::new();
         let hooks = t2.apply_with(ApplyOptions {

@@ -35,6 +35,9 @@ pub enum Action {
     Destroy { safe: bool },
     /// Something is in the way that bosun will not overwrite blindly.
     Conflict { why: String },
+    /// A line from `ensure:` is missing from a file bosun does not own, and
+    /// will be appended. The rest of the file is left exactly as it is.
+    EnsureLine,
 }
 
 impl Action {
@@ -48,6 +51,7 @@ impl Action {
             Action::Unchanged => '=',
             Action::Destroy { .. } => '-',
             Action::Conflict { .. } => '×',
+            Action::EnsureLine => '+',
         }
     }
 
@@ -60,6 +64,7 @@ impl Action {
             Action::Destroy { safe: true } => "destroy".into(),
             Action::Destroy { safe: false } => "destroy (modified locally)".into(),
             Action::Conflict { why } => format!("conflict: {why}"),
+            Action::EnsureLine => "ensure line".into(),
         }
     }
 
@@ -119,6 +124,11 @@ impl Summary {
 #[derive(Debug)]
 pub struct Plan {
     pub entries: Vec<Entry>,
+    /// Targets covered by `ensure:`. bosun owns one line of each, so apply
+    /// drops any managed-file record it still holds for them — a leftover
+    /// record from when the file *was* managed would make it a prune
+    /// candidate the day the ensure entry goes away.
+    pub ensured: Vec<PathBuf>,
     pub hooks: Vec<HookPlan>,
     pub summary: Summary,
     /// Notes for the plan header (repo untagged, ...).
@@ -156,13 +166,40 @@ pub fn plan(opts: &PlanOptions<'_>) -> Result<Plan> {
             Action::Unchanged => summary.unchanged += 1,
             Action::Conflict { .. } => summary.conflict += 1,
             Action::Destroy { .. } => summary.destroy += 1,
+            Action::EnsureLine => summary.add += 1,
+        }
+        entries.push(entry);
+    }
+
+    let ensure = ensure_entries(opts);
+    let ensured: Vec<PathBuf> = ensure.iter().map(|e| e.target.clone()).collect();
+    for entry in ensure {
+        match &entry.action {
+            Action::Unchanged => summary.unchanged += 1,
+            Action::Conflict { .. } => summary.conflict += 1,
+            _ => summary.add += 1,
         }
         entries.push(entry);
     }
 
     // Files bosun owned last time but does not now: a disabled group, or a file
     // removed upstream. Only detectable from state.
-    let managed: Vec<PathBuf> = files.iter().map(|f| f.target.clone()).collect();
+    // `ensure:` targets are listed unconditionally — group gates and filters
+    // included — because bosun only ever owns one line of them. Leaving one off
+    // this list would make a file it used to manage look like an orphan, and an
+    // unmodified orphan is deleted. That is how a migration from a managed
+    // `~/.zshrc` to an ensured line would eat someone's shell config.
+    let managed: Vec<PathBuf> = files
+        .iter()
+        .map(|f| f.target.clone())
+        .chain(
+            opts.cfg
+                .repo
+                .ensure
+                .iter()
+                .map(|e| opts.platform.home.join(&e.path)),
+        )
+        .collect();
     let unfiltered = opts.filter.targets.is_empty() && opts.filter.groups.is_empty();
     if unfiltered {
         for orphan in opts.state.orphans(&managed) {
@@ -205,6 +242,7 @@ pub fn plan(opts: &PlanOptions<'_>) -> Result<Plan> {
 
     Ok(Plan {
         entries,
+        ensured,
         hooks,
         summary,
         notes: Vec::new(),
@@ -302,6 +340,107 @@ fn classify(renderer: &Renderer<'_>, file: &ManagedFile, opts: &PlanOptions<'_>)
     })
 }
 
+/// Plan the `ensure:` lines.
+///
+/// Unlike a managed file there is nothing to render and nothing to diff: the
+/// only question is whether the line is already somewhere in the target. If it
+/// is not, the content to write is the whole existing file plus the line, so
+/// the ordinary atomic-write-with-backup path in `apply` carries it.
+fn ensure_entries(opts: &PlanOptions<'_>) -> Vec<Entry> {
+    let mut out = Vec::new();
+
+    for spec in &opts.cfg.repo.ensure {
+        if !opts.cfg.group_enabled(&spec.group) || !spec.condition.matches(opts.platform) {
+            continue;
+        }
+        let target = opts.platform.home.join(&spec.path);
+        let group_ok = opts.filter.groups.is_empty() || opts.filter.groups.contains(&spec.group);
+        let target_ok = opts.filter.targets.is_empty()
+            || opts
+                .filter
+                .targets
+                .iter()
+                .any(|t| target.ends_with(t) || spec.path.ends_with(t) || target == *t);
+        if !(group_ok && target_ok) {
+            continue;
+        }
+
+        let display = display_path(&target, opts.platform);
+
+        // Same rule as a managed file: a directory or symlink is never
+        // silently replaced.
+        if let Ok(m) = std::fs::symlink_metadata(&target) {
+            let why = if m.is_dir() {
+                Some("a directory is in the way")
+            } else if m.file_type().is_symlink() {
+                Some("the target is a symlink")
+            } else {
+                None
+            };
+            if let Some(why) = why {
+                out.push(Entry {
+                    target,
+                    display,
+                    action: Action::Conflict { why: why.into() },
+                    stats: Stats::default(),
+                    body: Body::None,
+                    contents: None,
+                    mode: 0o644,
+                    dir_mode: None,
+                });
+                continue;
+            }
+        }
+
+        let existing = std::fs::read_to_string(&target).ok();
+        let wanted = spec.line.trim_end();
+
+        if let Some(text) = &existing
+            && text.lines().any(|l| l.trim_end() == wanted)
+        {
+            out.push(Entry {
+                target,
+                display,
+                action: Action::Unchanged,
+                stats: Stats::default(),
+                body: Body::None,
+                contents: None,
+                mode: 0o644,
+                dir_mode: None,
+            });
+            continue;
+        }
+
+        let mut next = existing.unwrap_or_default();
+        if !next.is_empty() {
+            if !next.ends_with('\n') {
+                next.push('\n');
+            }
+            // A blank line so the appended line reads as bosun's, not as part
+            // of whatever an installer wrote above it.
+            next.push('\n');
+        }
+        next.push_str(wanted);
+        next.push('\n');
+
+        out.push(Entry {
+            target,
+            display,
+            action: Action::EnsureLine,
+            stats: Stats {
+                added: 1,
+                removed: 0,
+            },
+            body: Body::None,
+            contents: Some(next.into_bytes()),
+            mode: 0o644,
+            dir_mode: None,
+        });
+    }
+
+    out
+}
+
 fn display_path(path: &std::path::Path, platform: &Platform) -> String {
     match path.strip_prefix(&platform.home) {
         Ok(rest) => format!("~/{}", rest.display()),
@@ -331,10 +470,10 @@ mod tests {
     fn a_fresh_home_is_all_creates() {
         let t = Harness::new();
         let p = t.plan();
-        assert_eq!(p.summary.add, 2);
+        assert_eq!(p.summary.add, 3, "two files and one ensured line");
         assert_eq!(p.summary.change, 0);
         assert!(p.summary.has_changes());
-        assert!(p.summary.line().contains("2 to add"));
+        assert!(p.summary.line().contains("3 to add"));
     }
 
     #[test]
@@ -343,7 +482,7 @@ mod tests {
         t.apply();
         let p = t.plan();
         assert_eq!(p.summary.add, 0);
-        assert_eq!(p.summary.unchanged, 2);
+        assert_eq!(p.summary.unchanged, 3);
         assert!(!p.summary.has_changes());
     }
 
@@ -437,6 +576,139 @@ mod tests {
             e.contents.is_none(),
             "a conflict must not carry content to write"
         );
+    }
+
+    #[test]
+    fn an_ensure_line_is_appended_to_a_file_bosun_does_not_own() {
+        let t = Harness::new();
+        let profile = t.home.path().join(".profile");
+        std::fs::write(
+            &profile,
+            "# written by some installer\nexport PATH=/x:$PATH\n",
+        )
+        .unwrap();
+
+        let p = t.plan();
+        let e = t.entry(&p, "~/.profile");
+        assert_eq!(e.action, Action::EnsureLine);
+
+        let next = String::from_utf8(e.contents.clone().unwrap()).unwrap();
+        assert!(
+            next.starts_with("# written by some installer\nexport PATH=/x:$PATH\n"),
+            "the installer's lines are kept verbatim: {next:?}"
+        );
+        assert!(
+            next.ends_with("source ~/.config/zsh/bosun.zsh\n"),
+            "{next:?}"
+        );
+    }
+
+    #[test]
+    fn an_ensure_line_already_present_is_unchanged_wherever_it_sits() {
+        let t = Harness::new();
+        std::fs::write(
+            t.home.path().join(".profile"),
+            "source ~/.config/zsh/bosun.zsh\nexport PATH=/x:$PATH\n",
+        )
+        .unwrap();
+        let p = t.plan();
+        assert_eq!(t.entry(&p, "~/.profile").action, Action::Unchanged);
+    }
+
+    #[test]
+    fn a_missing_ensure_target_is_created_holding_just_the_line() {
+        let t = Harness::new();
+        t.apply();
+        let got = std::fs::read_to_string(t.home.path().join(".profile")).unwrap();
+        assert_eq!(got, "source ~/.config/zsh/bosun.zsh\n");
+    }
+
+    #[test]
+    fn ensuring_twice_appends_once() {
+        let t = Harness::new();
+        std::fs::write(t.home.path().join(".profile"), "export PATH=/x:$PATH\n").unwrap();
+        t.apply();
+        let once = std::fs::read_to_string(t.home.path().join(".profile")).unwrap();
+        t.apply();
+        let twice = std::fs::read_to_string(t.home.path().join(".profile")).unwrap();
+        assert_eq!(once, twice);
+        assert_eq!(twice.matches("bosun.zsh").count(), 1);
+    }
+
+    #[test]
+    fn a_symlinked_ensure_target_is_a_conflict_not_an_append() {
+        let t = Harness::new();
+        let real = t.home.path().join("elsewhere");
+        std::fs::write(&real, "x\n").unwrap();
+        std::os::unix::fs::symlink(&real, t.home.path().join(".profile")).unwrap();
+
+        let p = t.plan();
+        let e = t.entry(&p, "~/.profile");
+        assert!(matches!(e.action, Action::Conflict { .. }));
+        assert!(e.contents.is_none(), "a conflict must not carry content");
+    }
+
+    /// The regression that would eat a shell config. Moving `~/.zshrc` from a
+    /// managed file to an ensured line leaves it recorded in state but no
+    /// longer in `files:`, which is the exact shape of an orphan — and an
+    /// unmodified orphan is deleted on a plain apply.
+    #[test]
+    fn an_ensure_target_is_never_an_orphan_even_after_it_stops_being_managed() {
+        let t = Harness::new();
+        t.apply();
+
+        // Pretend .profile used to be a managed file: that is what a migration
+        // from `files:` to `ensure:` leaves behind.
+        let profile = t.home.path().join(".profile");
+        let body = std::fs::read(&profile).unwrap();
+        let mut state = t.state();
+        state.record_file(&profile, &body, Some(0o644));
+        state.save(&t.state_path()).unwrap();
+
+        let p = t.plan();
+        assert_eq!(
+            p.summary.destroy,
+            0,
+            "{:?}",
+            p.entries
+                .iter()
+                .map(|e| (&e.display, e.action.label()))
+                .collect::<Vec<_>>()
+        );
+        assert_eq!(t.entry(&p, "~/.profile").action, Action::Unchanged);
+    }
+
+    /// bosun owns one line, so it must not claim the whole file in state.
+    #[test]
+    fn an_ensure_target_is_not_recorded_as_a_managed_file() {
+        let t = Harness::new();
+        t.apply();
+        assert!(
+            t.state().file(&t.home.path().join(".profile")).is_none(),
+            "a partly-owned file must stay out of the managed-file state"
+        );
+        assert!(t.state().file(&t.home.path().join(".zshrc")).is_some());
+    }
+
+    /// Migrating a file from `files:` to `ensure:` leaves a whole-file hash
+    /// behind. Left there, it would prune the file the day the ensure entry
+    /// went away, so apply clears it.
+    #[test]
+    fn applying_forgets_a_managed_record_left_over_from_before_the_migration() {
+        let t = Harness::new();
+        let profile = t.home.path().join(".profile");
+        std::fs::write(&profile, "export PATH=/x:$PATH\n").unwrap();
+
+        let mut state = t.state();
+        state.record_file(&profile, b"whatever bosun wrote back then", Some(0o644));
+        state.save(&t.state_path()).unwrap();
+
+        t.apply();
+        assert!(
+            t.state().file(&profile).is_none(),
+            "the stale managed-file record must be cleared"
+        );
+        assert_eq!(t.plan().summary.destroy, 0);
     }
 
     #[test]

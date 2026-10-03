@@ -12,8 +12,8 @@ ssh and git — is deliberately **not** bosun's job: that is
 [hats](https://github.com/planesailingio/hats), a sibling tool. The two meet
 at exactly three seams:
 
-1. bosun's `.zshrc` evals `hats shell-init zsh` behind a `command -v` guard,
-   so a machine without hats still gets a working shell.
+1. bosun's managed zsh config evals `hats shell-init zsh` behind a
+   `command -v` guard, so a machine without hats still gets a working shell.
 2. bosun's starship config shows `$HATS_HAT`, the environment variable hats
    exports.
 3. bosun manages `~/.config/git/style.gitconfig` (delta, aliases, LFS), which
@@ -51,11 +51,19 @@ Groups, chosen once at `bosun init`:
 
 | Group    | Contents                                                          |
 |----------|-------------------------------------------------------------------|
-| `shell`  | `.zshrc`, `.zshenv`: history, completions, fzf, zoxide, atuin, tool init |
+| `shell`  | `~/.config/zsh/bosun.zsh` and `.zshenv`: completions, keybindings, fzf, zoxide, atuin, tool init — plus one sourced line in your own `~/.zshrc` |
 | `git`    | `~/.config/git/style.gitconfig`: delta, aliases, LFS               |
 | `theme`  | Catppuccin Mocha for starship, bat, btop, k9s, lazygit             |
 | `tools`  | mise global runtimes (python, node, go)                            |
 | `editor` | VS Code extension list (installed by a hook)                       |
+
+`~/.zshrc` itself is **not** managed. bosun owns `~/.config/zsh/bosun.zsh` and
+guarantees one guarded `source` line pointing at it, declared under `ensure:`
+in the manifest rather than `files:`. Everything else in `~/.zshrc` is yours,
+so the installers that append there — oMLX, Wine, nvm, conda — keep working
+instead of being overwritten on every converge. It is the same shape as the
+git seam: bosun owns the fragment, something it does not own includes it, and
+the include degrades quietly when the fragment is absent.
 
 Hooks run around an apply and declare their triggers in `bosun.yaml` — `once`,
 `always`, or `onchange` with explicit inputs: brew bundles, zsh setup (chsh,
@@ -89,6 +97,11 @@ Package bundles live under [brew/](brew/README.md): `core`, `devops`,
 ├── backups/<ts>/  pre-overwrite copies and pruned files
 └── plans/         saved plans
 ```
+
+A `files:` entry is owned outright: bosun renders it, overwrites it and prunes
+it. An `ensure:` entry is the opposite — one declared line that bosun appends
+if it is missing and otherwise leaves alone, in a file it never rewrites and
+never records in `state.yaml`.
 
 Templates are minijinja (`.j2` suffix); the context is `os`, `arch`, `home`,
 `user`, `hostname`, `brew_prefix`, `repo_dir`, `files_dir`, `version` and the

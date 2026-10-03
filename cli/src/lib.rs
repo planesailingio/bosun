@@ -7,8 +7,8 @@
 //!
 //! Per-client context switching is not bosun's job: that is `hats`, a sibling
 //! tool. bosun's templates carry exactly two hats-shaped lines — the guarded
-//! `hats shell-init` eval in `.zshrc` and the `$HATS_HAT` starship module —
-//! and both are no-ops on a machine without hats.
+//! `hats shell-init` eval in the zsh config and the `$HATS_HAT` starship
+//! module — and both are no-ops on a machine without hats.
 
 pub mod app;
 pub mod cli;

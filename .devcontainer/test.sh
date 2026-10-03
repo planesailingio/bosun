@@ -54,6 +54,16 @@ echo "==> the git style fragment is in place"
 [ -f "${FAKE_HOME}/.config/git/style.gitconfig" ] \
     || { echo "FAIL: ~/.config/git/style.gitconfig was not written"; exit 1; }
 
+echo "==> the zsh fragment is in place and ~/.zshrc only sources it"
+[ -f "${FAKE_HOME}/.config/zsh/bosun.zsh" ] \
+    || { echo "FAIL: ~/.config/zsh/bosun.zsh was not written"; exit 1; }
+# On a fresh machine `ensure:` creates ~/.zshrc holding nothing but the line.
+# Anything more means bosun has gone back to owning the whole file.
+[ "$(grep -cv '^[[:space:]]*$' "${FAKE_HOME}/.zshrc")" -eq 1 ] \
+    || { echo "FAIL: ~/.zshrc should hold exactly the sourced line:"; cat "${FAKE_HOME}/.zshrc"; exit 1; }
+grep -q 'source ~/.config/zsh/bosun.zsh' "${FAKE_HOME}/.zshrc" \
+    || { echo "FAIL: ~/.zshrc does not source the fragment"; exit 1; }
+
 echo "==> bosun plan is now clean"
 set +e
 HOME="${FAKE_HOME}" "${BOSUN}" --bosun-home "${BOSUN_HOME}" --no-color plan --skip-hooks >/dev/null
